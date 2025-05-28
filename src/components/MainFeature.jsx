@@ -1,8 +1,11 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useContext } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { toast } from 'react-toastify'
 import { format, isToday, isPast, isFuture } from 'date-fns'
+import { useSelector } from 'react-redux'
 import ApperIcon from './ApperIcon'
+import TaskService from '../services/TaskService'
+import { AuthContext } from '../App'
 
 const MainFeature = () => {
   const [tasks, setTasks] = useState([])
@@ -11,6 +14,13 @@ const MainFeature = () => {
   const [sortBy, setSortBy] = useState('dueDate')
   const [searchQuery, setSearchQuery] = useState('')
   const [editingTask, setEditingTask] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [submitLoading, setSubmitLoading] = useState(false)
+
+  // Get user from Redux state
+  const { user, isAuthenticated } = useSelector((state) => state.user)
+  const { logout } = useContext(AuthContext)
 
   const [formData, setFormData] = useState({
     title: '',
@@ -34,7 +44,30 @@ const MainFeature = () => {
     { value: 'low', label: 'Low', icon: 'ChevronDown', color: 'text-green-500' }
   ]
 
-  const handleSubmit = (e) => {
+  // Load tasks on component mount and when user changes
+  useEffect(() => {
+    if (isAuthenticated && user) {
+      loadTasks()
+    }
+  }, [isAuthenticated, user]) // Only depend on authentication state
+
+  const loadTasks = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const tasksData = await TaskService.fetchTasks()
+      setTasks(tasksData || [])
+    } catch (err) {
+      console.error('Error loading tasks:', err)
+      setError(err.message || 'Failed to load tasks')
+      toast.error(err.message || 'Failed to load tasks')
+      setTasks([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSubmit = async (e) => {
     e.preventDefault()
     
     if (!formData.title.trim()) {
@@ -42,59 +75,88 @@ const MainFeature = () => {
       return
     }
 
-    const taskData = {
-      id: editingTask ? editingTask.id : Date.now().toString(),
-      ...formData,
-      completed: editingTask ? editingTask.completed : false,
-      createdAt: editingTask ? editingTask.createdAt : new Date(),
-      updatedAt: new Date()
-    }
+    try {
+      setSubmitLoading(true)
+      
+      const taskData = {
+        title: formData.title.trim(),
+        description: formData.description.trim(),
+        priority: formData.priority,
+        dueDate: formData.dueDate,
+        category: formData.category,
+        completed: editingTask ? editingTask.completed : false
+      }
 
-    if (editingTask) {
-      setTasks(tasks.map(task => task.id === editingTask.id ? taskData : task))
-      toast.success('Task updated successfully!')
-      setEditingTask(null)
-    } else {
-      setTasks([...tasks, taskData])
-      toast.success('Task created successfully!')
-    }
+      if (editingTask) {
+        const updatedTask = await TaskService.updateTask(editingTask.Id, taskData)
+        setTasks(tasks.map(task => task.Id === editingTask.Id ? updatedTask : task))
+        toast.success('Task updated successfully!')
+        setEditingTask(null)
+      } else {
+        const newTask = await TaskService.createTask(taskData)
+        setTasks([newTask, ...tasks])
+        toast.success('Task created successfully!')
+      }
 
-    setFormData({
-      title: '',
-      description: '',
-      priority: 'medium',
-      dueDate: '',
-      category: 'personal'
-    })
-    setIsFormOpen(false)
+      setFormData({
+        title: '',
+        description: '',
+        priority: 'medium',
+        dueDate: '',
+        category: 'personal'
+      })
+      setIsFormOpen(false)
+    } catch (err) {
+      console.error('Error saving task:', err)
+      toast.error(err.message || 'Failed to save task')
+    } finally {
+      setSubmitLoading(false)
+    }
   }
 
-  const toggleTask = (id) => {
-    setTasks(tasks.map(task => 
-      task.id === id 
-        ? { ...task, completed: !task.completed, updatedAt: new Date() }
-        : task
-    ))
-    
-    const task = tasks.find(t => t.id === id)
-    if (task) {
+  const toggleTask = async (taskId) => {
+    try {
+      const task = tasks.find(t => t.Id === taskId)
+      if (!task) return
+
+      const updatedTaskData = {
+        title: task.title,
+        description: task.description,
+        priority: task.priority,
+        dueDate: task.due_date,
+        category: task.category,
+        completed: !task.completed
+      }
+
+      const updatedTask = await TaskService.updateTask(taskId, updatedTaskData)
+      setTasks(tasks.map(t => t.Id === taskId ? updatedTask : t))
+      
       toast.success(task.completed ? 'Task marked as incomplete' : 'Task completed! 🎉')
+    } catch (err) {
+      console.error('Error toggling task:', err)
+      toast.error('Failed to update task status')
     }
   }
 
-  const deleteTask = (id) => {
-    setTasks(tasks.filter(task => task.id !== id))
-    toast.success('Task deleted successfully')
+  const deleteTask = async (taskId) => {
+    try {
+      await TaskService.deleteTasks([taskId])
+      setTasks(tasks.filter(task => task.Id !== taskId))
+      toast.success('Task deleted successfully')
+    } catch (err) {
+      console.error('Error deleting task:', err)
+      toast.error('Failed to delete task')
+    }
   }
 
   const startEdit = (task) => {
     setEditingTask(task)
     setFormData({
-      title: task.title,
-      description: task.description,
-      priority: task.priority,
-      dueDate: task.dueDate,
-      category: task.category
+      title: task.title || '',
+      description: task.description || '',
+      priority: task.priority || 'medium',
+      dueDate: task.due_date || '',
+      category: task.category || 'personal'
     })
     setIsFormOpen(true)
   }
@@ -113,8 +175,8 @@ const MainFeature = () => {
 
   const filteredAndSortedTasks = useMemo(() => {
     let filtered = tasks.filter(task => {
-      const matchesSearch = task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                           task.description.toLowerCase().includes(searchQuery.toLowerCase())
+      const matchesSearch = (task.title?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
+                           (task.description?.toLowerCase() || '').includes(searchQuery.toLowerCase())
       
       switch (filter) {
         case 'completed':
@@ -122,9 +184,9 @@ const MainFeature = () => {
         case 'pending':
           return !task.completed && matchesSearch
         case 'overdue':
-          return !task.completed && task.dueDate && isPast(new Date(task.dueDate)) && matchesSearch
+          return !task.completed && task.due_date && isPast(new Date(task.due_date)) && matchesSearch
         case 'today':
-          return task.dueDate && isToday(new Date(task.dueDate)) && matchesSearch
+          return task.due_date && isToday(new Date(task.due_date)) && matchesSearch
         default:
           return matchesSearch
       }
@@ -136,14 +198,14 @@ const MainFeature = () => {
           const priorityOrder = { high: 3, medium: 2, low: 1 }
           return priorityOrder[b.priority] - priorityOrder[a.priority]
         case 'title':
-          return a.title.localeCompare(b.title)
+          return (a.title || '').localeCompare(b.title || '')
         case 'dueDate':
-          if (!a.dueDate && !b.dueDate) return 0
-          if (!a.dueDate) return 1
-          if (!b.dueDate) return -1
-          return new Date(a.dueDate) - new Date(b.dueDate)
+          if (!a.due_date && !b.due_date) return 0
+          if (!a.due_date) return 1
+          if (!b.due_date) return -1
+          return new Date(a.due_date) - new Date(b.due_date)
         default:
-          return new Date(b.createdAt) - new Date(a.createdAt)
+          return new Date(b.created_at || b.CreatedOn) - new Date(a.created_at || a.CreatedOn)
       }
     })
   }, [tasks, filter, sortBy, searchQuery])
@@ -152,7 +214,7 @@ const MainFeature = () => {
     const total = tasks.length
     const completed = tasks.filter(t => t.completed).length
     const pending = total - completed
-    const overdue = tasks.filter(t => !t.completed && t.dueDate && isPast(new Date(t.dueDate))).length
+    const overdue = tasks.filter(t => !t.completed && t.due_date && isPast(new Date(t.due_date))).length
     
     return { total, completed, pending, overdue }
   }, [tasks])
@@ -167,8 +229,55 @@ const MainFeature = () => {
     return null
   }
 
+  // Show authentication required message if not authenticated
+  if (!isAuthenticated) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-surface-200 to-surface-300 dark:from-surface-700 dark:to-surface-600 rounded-full flex items-center justify-center">
+            <ApperIcon name="Lock" className="w-8 h-8 text-surface-400 dark:text-surface-500" />
+          </div>
+          <h3 className="text-lg font-semibold text-surface-900 dark:text-surface-100 mb-2">
+            Authentication Required
+          </h3>
+          <p className="text-surface-600 dark:text-surface-400 mb-6">
+            Please sign in to access your tasks
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6 sm:space-y-8">
+      {/* User Info */}
+      {user && (
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="neu-card p-4 sm:p-6"
+        >
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-semibold text-surface-900 dark:text-surface-100">
+                Welcome back, {user.firstName || user.emailAddress}!
+              </h2>
+              <p className="text-surface-600 dark:text-surface-400">
+                Manage your tasks and stay organized
+              </p>
+            </div>
+            <button
+              onClick={logout}
+              className="flex items-center gap-2 px-4 py-2 text-surface-600 dark:text-surface-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+            >
+              <ApperIcon name="LogOut" className="w-4 h-4" />
+              Logout
+            </button>
+          </div>
+        </motion.div>
+      )}
+
       {/* Header Stats */}
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
@@ -220,7 +329,8 @@ const MainFeature = () => {
           
           <button
             onClick={() => setIsFormOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-primary to-primary-dark text-white rounded-lg hover:shadow-lg transition-all duration-200 hover:scale-105 active:scale-95 w-full sm:w-auto justify-center"
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-primary to-primary-dark text-white rounded-lg hover:shadow-lg transition-all duration-200 hover:scale-105 active:scale-95 w-full sm:w-auto justify-center disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <ApperIcon name="Plus" className="w-4 h-4" />
             Add Task
@@ -263,7 +373,39 @@ const MainFeature = () => {
             <option value="created">Sort by Created</option>
           </select>
         </div>
+
+        {/* Refresh Button */}
+        <div className="flex justify-end">
+          <button
+            onClick={loadTasks}
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2 neu-button text-surface-600 dark:text-surface-400 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <ApperIcon name={loading ? "Loader" : "RefreshCw"} className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            {loading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
       </motion.div>
+
+      {/* Error Display */}
+      {error && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="neu-card p-4 border-l-4 border-red-500 bg-red-50 dark:bg-red-900/20"
+        >
+          <div className="flex items-center gap-3">
+            <ApperIcon name="AlertCircle" className="w-5 h-5 text-red-500" />
+            <p className="text-red-700 dark:text-red-300">{error}</p>
+            <button
+              onClick={loadTasks}
+              className="ml-auto px-3 py-1 text-sm bg-red-500 text-white rounded hover:bg-red-600 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </motion.div>
+      )}
 
       {/* Task Creation Form */}
       <AnimatePresence>
@@ -281,7 +423,8 @@ const MainFeature = () => {
               </h3>
               <button
                 onClick={cancelEdit}
-                className="p-2 text-surface-400 hover:text-surface-600 dark:text-surface-500 dark:hover:text-surface-300 transition-colors"
+                disabled={submitLoading}
+                className="p-2 text-surface-400 hover:text-surface-600 dark:text-surface-500 dark:hover:text-surface-300 transition-colors disabled:opacity-50"
               >
                 <ApperIcon name="X" className="w-5 h-5" />
               </button>
@@ -300,6 +443,7 @@ const MainFeature = () => {
                     className="w-full px-4 py-2 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent bg-white dark:bg-surface-700 text-surface-900 dark:text-surface-100"
                     placeholder="Enter task title..."
                     required
+                    disabled={submitLoading}
                   />
                 </div>
 
@@ -313,6 +457,7 @@ const MainFeature = () => {
                     rows={3}
                     className="w-full px-4 py-2 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent bg-white dark:bg-surface-700 text-surface-900 dark:text-surface-100"
                     placeholder="Add task description..."
+                    disabled={submitLoading}
                   />
                 </div>
 
@@ -324,6 +469,7 @@ const MainFeature = () => {
                     value={formData.priority}
                     onChange={(e) => setFormData({ ...formData, priority: e.target.value })}
                     className="w-full px-4 py-2 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent bg-white dark:bg-surface-700 text-surface-900 dark:text-surface-100"
+                    disabled={submitLoading}
                   >
                     {priorities.map(priority => (
                       <option key={priority.value} value={priority.value}>
@@ -341,6 +487,7 @@ const MainFeature = () => {
                     value={formData.category}
                     onChange={(e) => setFormData({ ...formData, category: e.target.value })}
                     className="w-full px-4 py-2 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent bg-white dark:bg-surface-700 text-surface-900 dark:text-surface-100"
+                    disabled={submitLoading}
                   >
                     {categories.map(category => (
                       <option key={category.id} value={category.id}>
@@ -359,6 +506,7 @@ const MainFeature = () => {
                     value={formData.dueDate}
                     onChange={(e) => setFormData({ ...formData, dueDate: e.target.value })}
                     className="w-full px-4 py-2 border border-surface-300 dark:border-surface-600 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent bg-white dark:bg-surface-700 text-surface-900 dark:text-surface-100"
+                    disabled={submitLoading}
                   />
                 </div>
               </div>
@@ -366,16 +514,22 @@ const MainFeature = () => {
               <div className="flex flex-col sm:flex-row gap-3 pt-4">
                 <button
                   type="submit"
-                  className="flex items-center justify-center gap-2 px-6 py-2 bg-gradient-to-r from-primary to-primary-dark text-white rounded-lg hover:shadow-lg transition-all duration-200 hover:scale-105 active:scale-95"
+                  disabled={submitLoading || !formData.title.trim()}
+                  className="flex items-center justify-center gap-2 px-6 py-2 bg-gradient-to-r from-primary to-primary-dark text-white rounded-lg hover:shadow-lg transition-all duration-200 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                 >
-                  <ApperIcon name={editingTask ? "Save" : "Plus"} className="w-4 h-4" />
-                  {editingTask ? 'Update Task' : 'Create Task'}
+                  {submitLoading ? (
+                    <ApperIcon name="Loader" className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <ApperIcon name={editingTask ? "Save" : "Plus"} className="w-4 h-4" />
+                  )}
+                  {submitLoading ? 'Saving...' : (editingTask ? 'Update Task' : 'Create Task')}
                 </button>
                 
                 <button
                   type="button"
                   onClick={cancelEdit}
-                  className="neu-button text-surface-600 dark:text-surface-400"
+                  disabled={submitLoading}
+                  className="neu-button text-surface-600 dark:text-surface-400 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Cancel
                 </button>
@@ -385,132 +539,150 @@ const MainFeature = () => {
         )}
       </AnimatePresence>
 
+      {/* Loading State */}
+      {loading && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="neu-card p-8 sm:p-12 text-center"
+        >
+          <div className="w-16 h-16 mx-auto mb-4 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-surface-600 dark:text-surface-400">Loading your tasks...</p>
+        </motion.div>
+      )}
+
       {/* Task List */}
-      <motion.div 
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, delay: 0.3 }}
-        className="space-y-3"
-      >
-        <AnimatePresence>
-          {filteredAndSortedTasks.length > 0 ? (
-            filteredAndSortedTasks.map((task) => {
-              const category = categories.find(c => c.id === task.category)
-              const priority = priorities.find(p => p.value === task.priority)
-              const dueDateStatus = getDueDateStatus(task.dueDate)
-              
-              return (
-                <motion.div
-                  key={task.id}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 20 }}
-                  transition={{ duration: 0.3 }}
-                  className={`neu-card p-4 sm:p-6 ${task.completed ? 'opacity-75' : ''}`}
-                >
-                  <div className="flex items-start gap-4">
-                    <button
-                      onClick={() => toggleTask(task.id)}
-                      className="mt-1 flex-shrink-0"
-                    >
-                      <div className={`task-checkbox ${task.completed ? 'checked' : ''}`} />
-                    </button>
-                    
-                    <div className="flex-1 min-w-0">
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 mb-3">
-                        <h4 className={`text-lg font-semibold ${task.completed ? 'line-through text-surface-500' : 'text-surface-900 dark:text-surface-100'}`}>
-                          {task.title}
-                        </h4>
-                        
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className={`priority-badge priority-${task.priority}`}>
-                            <ApperIcon name={priority.icon} className="w-3 h-3" />
-                            {priority.label}
-                          </span>
+      {!loading && (
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.3 }}
+          className="space-y-3"
+        >
+          <AnimatePresence>
+            {filteredAndSortedTasks.length > 0 ? (
+              filteredAndSortedTasks.map((task) => {
+                const category = categories.find(c => c.id === task.category)
+                const priority = priorities.find(p => p.value === task.priority)
+                const dueDateStatus = getDueDateStatus(task.due_date)
+                
+                return (
+                  <motion.div
+                    key={task.Id}
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 20 }}
+                    transition={{ duration: 0.3 }}
+                    className={`neu-card p-4 sm:p-6 ${task.completed ? 'opacity-75' : ''}`}
+                  >
+                    <div className="flex items-start gap-4">
+                      <button
+                        onClick={() => toggleTask(task.Id)}
+                        className="mt-1 flex-shrink-0"
+                      >
+                        <div className={`task-checkbox ${task.completed ? 'checked' : ''}`} />
+                      </button>
+                      
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 mb-3">
+                          <h4 className={`text-lg font-semibold ${task.completed ? 'line-through text-surface-500' : 'text-surface-900 dark:text-surface-100'}`}>
+                            {task.title}
+                          </h4>
                           
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium ${category.color} text-white`}>
-                            {category.name}
-                          </span>
-                          
-                          {task.dueDate && (
-                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                              dueDateStatus === 'overdue' ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300' :
-                              dueDateStatus === 'today' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300' :
-                              'bg-surface-100 text-surface-800 dark:bg-surface-700 dark:text-surface-300'
-                            }`}>
-                              <ApperIcon name="Calendar" className="w-3 h-3 inline mr-1" />
-                              {format(new Date(task.dueDate), 'MMM dd')}
-                            </span>
-                          )}
+                          <div className="flex flex-wrap items-center gap-2">
+                            {priority && (
+                              <span className={`priority-badge priority-${task.priority}`}>
+                                <ApperIcon name={priority.icon} className="w-3 h-3" />
+                                {priority.label}
+                              </span>
+                            )}
+                            
+                            {category && (
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${category.color} text-white`}>
+                                {category.name}
+                              </span>
+                            )}
+                            
+                            {task.due_date && (
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                dueDateStatus === 'overdue' ? 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300' :
+                                dueDateStatus === 'today' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300' :
+                                'bg-surface-100 text-surface-800 dark:bg-surface-700 dark:text-surface-300'
+                              }`}>
+                                <ApperIcon name="Calendar" className="w-3 h-3 inline mr-1" />
+                                {format(new Date(task.due_date), 'MMM dd')}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      
-                      {task.description && (
-                        <p className={`text-sm mb-3 ${task.completed ? 'line-through text-surface-400' : 'text-surface-600 dark:text-surface-400'}`}>
-                          {task.description}
-                        </p>
-                      )}
-                      
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-surface-400">
-                          Created {format(new Date(task.createdAt), 'MMM dd, yyyy')}
-                        </span>
                         
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => startEdit(task)}
-                            className="p-2 text-surface-400 hover:text-primary dark:text-surface-500 dark:hover:text-primary transition-colors"
-                          >
-                            <ApperIcon name="Edit2" className="w-4 h-4" />
-                          </button>
+                        {task.description && (
+                          <p className={`text-sm mb-3 ${task.completed ? 'line-through text-surface-400' : 'text-surface-600 dark:text-surface-400'}`}>
+                            {task.description}
+                          </p>
+                        )}
+                        
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-surface-400">
+                            Created {format(new Date(task.created_at || task.CreatedOn), 'MMM dd, yyyy')}
+                          </span>
                           
-                          <button
-                            onClick={() => deleteTask(task.id)}
-                            className="p-2 text-surface-400 hover:text-red-500 dark:text-surface-500 dark:hover:text-red-400 transition-colors"
-                          >
-                            <ApperIcon name="Trash2" className="w-4 h-4" />
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => startEdit(task)}
+                              className="p-2 text-surface-400 hover:text-primary dark:text-surface-500 dark:hover:text-primary transition-colors"
+                            >
+                              <ApperIcon name="Edit2" className="w-4 h-4" />
+                            </button>
+                            
+                            <button
+                              onClick={() => deleteTask(task.Id)}
+                              className="p-2 text-surface-400 hover:text-red-500 dark:text-surface-500 dark:hover:text-red-400 transition-colors"
+                            >
+                              <ApperIcon name="Trash2" className="w-4 h-4" />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                </motion.div>
-              )
-            })
-          ) : (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="neu-card p-8 sm:p-12 text-center"
-            >
-              <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-surface-200 to-surface-300 dark:from-surface-700 dark:to-surface-600 rounded-full flex items-center justify-center">
-                <ApperIcon name="CheckSquare" className="w-8 h-8 text-surface-400 dark:text-surface-500" />
-              </div>
-              
-              <h3 className="text-lg font-semibold text-surface-900 dark:text-surface-100 mb-2">
-                {searchQuery || filter !== 'all' ? 'No tasks found' : 'No tasks yet'}
-              </h3>
-              
-              <p className="text-surface-600 dark:text-surface-400 mb-6">
-                {searchQuery || filter !== 'all' 
-                  ? 'Try adjusting your search or filter criteria'
-                  : 'Create your first task to get started with organizing your life'
-                }
-              </p>
-              
-              {!searchQuery && filter === 'all' && (
-                <button
-                  onClick={() => setIsFormOpen(true)}
-                  className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-primary to-primary-dark text-white rounded-lg hover:shadow-lg transition-all duration-200 hover:scale-105 active:scale-95"
-                >
-                  <ApperIcon name="Plus" className="w-4 h-4" />
-                  Create Your First Task
-                </button>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
+                  </motion.div>
+                )
+              })
+            ) : (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="neu-card p-8 sm:p-12 text-center"
+              >
+                <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-surface-200 to-surface-300 dark:from-surface-700 dark:to-surface-600 rounded-full flex items-center justify-center">
+                  <ApperIcon name="CheckSquare" className="w-8 h-8 text-surface-400 dark:text-surface-500" />
+                </div>
+                
+                <h3 className="text-lg font-semibold text-surface-900 dark:text-surface-100 mb-2">
+                  {searchQuery || filter !== 'all' ? 'No tasks found' : 'No tasks yet'}
+                </h3>
+                
+                <p className="text-surface-600 dark:text-surface-400 mb-6">
+                  {searchQuery || filter !== 'all' 
+                    ? 'Try adjusting your search or filter criteria'
+                    : 'Create your first task to get started with organizing your life'
+                  }
+                </p>
+                
+                {!searchQuery && filter === 'all' && (
+                  <button
+                    onClick={() => setIsFormOpen(true)}
+                    className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-primary to-primary-dark text-white rounded-lg hover:shadow-lg transition-all duration-200 hover:scale-105 active:scale-95"
+                  >
+                    <ApperIcon name="Plus" className="w-4 h-4" />
+                    Create Your First Task
+                  </button>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.div>
+      )}
     </div>
   )
 }
