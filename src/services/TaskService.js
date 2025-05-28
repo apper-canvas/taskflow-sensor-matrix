@@ -5,7 +5,7 @@ class TaskService {
       apperProjectId: import.meta.env.VITE_APPER_PROJECT_ID,
       apperPublicKey: import.meta.env.VITE_APPER_PUBLIC_KEY
     });
-    this.tableName = 'task1';
+    this.tableName = 'task2';
     
     // Define updateable fields based on the provided schema
     this.updateableFields = [
