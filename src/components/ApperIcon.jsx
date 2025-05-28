@@ -1,14 +1,17 @@
-import * as Icons from 'lucide-react'
+import React from 'react';
+import * as LucideIcons from 'lucide-react';
 
-const ApperIcon = ({ name, className = '', ...props }) => {
-  const IconComponent = Icons[name]
+const ApperIcon = ({ name, className = '', size = 24, ...props }) => {
+  // Get the icon component from lucide-react
+  const IconComponent = LucideIcons[name];
   
   if (!IconComponent) {
-    console.warn(`Icon "${name}" not found in lucide-react`)
-    return <Icons.HelpCircle className={className} {...props} />
+    // Fallback to a default icon if the requested icon doesn't exist
+    const DefaultIcon = LucideIcons.HelpCircle;
+    return <DefaultIcon className={className} size={size} {...props} />;
   }
   
-  return <IconComponent className={className} {...props} />
-}
+  return <IconComponent className={className} size={size} {...props} />;
+};
 
-export default ApperIcon
+export default ApperIcon;

@@ -130,6 +130,8 @@ function App() {
           <Route path="/signup" element={<Signup />} />
           <Route path="/callback" element={<Callback />} />
           <Route path="/error" element={<ErrorPage />} />
+          <Route path="/error" element={<ErrorPage />} />
+
           <Route path="/" element={<Home />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
